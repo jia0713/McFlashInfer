@@ -1,0 +1,43 @@
+#pragma once
+#include <flashinfer/page.cuh>
+#include <flashinfer/math.cuh>
+#include <flashinfer/layout.cuh>
+#include <flashinfer/utils.cuh>
+#include <flashinfer/pos_enc.cuh>
+#include <flashinfer/fastdiv.cuh>
+#include <flashinfer/attention/variant_helper.cuh>
+#include <flashinfer/attention/mla_params.cuh>
+
+using namespace flashinfer;
+
+using DTypeQ = {{ dtype_q }};
+using DTypeKV = {{ dtype_kv }};
+using DTypeO = {{ dtype_o }};
+using IdType = {{ dtype_idx }};
+constexpr int HEAD_DIM_CKV = {{ head_dim_ckv }};
+constexpr int HEAD_DIM_KPE = {{ head_dim_kpe }};
+
+#define DISPATCH_context(DTypeQ, DTypeKV, DTypeO, IdType, MASK_MODE, HEAD_DIM_CKV, HEAD_DIM_KPE, Params, ...) \
+  DISPATCH_MASK_MODE(mask_mode, MASK_MODE, { \
+    using Params = MLAParams<DTypeQ, DTypeKV, DTypeO, IdType>; \
+    __VA_ARGS__(); \
+  })
+
+#define DISPATCH_MLA_CTA_TILE_Q(cta_tile_q, CTA_TILE_Q, ...)                           \
+  switch (cta_tile_q) {                                                                \
+    case 32: {                                                                         \
+      constexpr uint32_t CTA_TILE_Q = 32;                                              \
+      __VA_ARGS__;                                                                     \
+      break;                                                                           \
+    }                                                                                  \
+    case 64: {                                                                         \
+      constexpr uint32_t CTA_TILE_Q = 64;                                              \
+      __VA_ARGS__;                                                                     \
+      break;                                                                           \
+    }                                                                                  \
+    default: {                                                                         \
+      std::ostringstream err_msg;                                                      \
+      err_msg << "Unsupported cta_tile_q: " << cta_tile_q;                             \
+      FLASHINFER_ERROR(err_msg.str());                                                 \
+    }                                                                                  \
+  }
