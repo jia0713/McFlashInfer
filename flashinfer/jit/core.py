@@ -122,6 +122,17 @@ class JitSpec:
         torch.ops.load_library(so_path)
         return getattr(torch.ops, self.name)
 
+    def build_and_load_tvm_ffi(self):
+        if self.aot_path.exists():
+            so_path = self.aot_path
+        else:
+            so_path = self.library_path
+            verbose = os.environ.get("FLASHINFER_JIT_VERBOSE", "0") == "1"
+            self.build(verbose)
+        import tvm_ffi
+
+        return tvm_ffi.load_module(str(so_path))
+
 
 def gen_jit_spec(
     name: str,

@@ -21,6 +21,11 @@ from torch.utils.cpp_extension import (
 
 from . import env as jit_env
 
+try:
+    import tvm_ffi
+except ImportError:
+    tvm_ffi = None
+
 
 def _get_glibcxx_abi_build_flags() -> List[str]:
     glibcxx_abi_cflags = [
@@ -49,6 +54,11 @@ def generate_ninja_build_for_op(
         jit_env.FLASHINFER_INCLUDE_DIR.resolve(),
         jit_env.FLASHINFER_CSRC_DIR.resolve(),
     ]
+    if tvm_ffi is not None:
+        system_includes += [
+            tvm_ffi.libinfo.find_include_path(),
+            tvm_ffi.libinfo.find_dlpack_include_path(),
+        ]
     system_includes += [p.resolve() for p in jit_env.CUTLASS_INCLUDE_DIRS]
 
     common_cflags = [
@@ -92,9 +102,18 @@ def generate_ninja_build_for_op(
         "-ltorch_cpu",
         "-ltorch_cuda",
         "-ltorch",
-        "-L$cuda_home/lib64",
-        "-lcudart",
     ]
+    maca_home = os.environ.get("MACA_PATH")
+    if maca_home is not None:
+        ldflags += [
+            f"-L{maca_home}/lib",
+            "-lmcruntime",
+        ]
+    else:
+        ldflags += [
+            "-L$cuda_home/lib64",
+            "-lcudart",
+        ]
     if extra_ldflags is not None:
         ldflags += extra_ldflags
 

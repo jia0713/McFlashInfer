@@ -14,38 +14,37 @@
  * limitations under the License.
  */
 #include "batch_prefill_config.inc"
-#include "tvm_binding_utils.h"
+#include "tvm_ffi_utils.h"
 
-IntTuple BatchPrefillWithKVCachePlan(DLTensor* float_workspace_buffer,
-                                     DLTensor* int_workspace_buffer,
-                                     DLTensor* page_locked_int_workspace_buffer,
-                                     DLTensor* qo_indptr, DLTensor* kv_indptr, IntTuple kv_len_arr,
-                                     int64_t total_num_rows, int64_t batch_size,
-                                     int64_t num_qo_heads, int64_t num_kv_heads, int64_t page_size,
-                                     bool enable_cuda_graph, int64_t head_dim_qk,
-                                     int64_t head_dim_vo, bool causal, TVMStreamHandle cu_stream);
+using tvm::ffi::Array;
+using tvm::ffi::Optional;
 
-void BatchPrefillWithRaggedKVCacheRun(DLTensor* float_workspace_buffer,
-                                      DLTensor* int_workspace_buffer, IntTuple plan_info_vec,
-                                      DLTensor* q, DLTensor* k, DLTensor* v, DLTensor* qo_indptr,
-                                      DLTensor* kv_indptr, DLTensor* q_rope_offset,
-                                      DLTensor* k_rope_offset, DLTensor* o, DLTensor* lse,
-                                      int64_t mask_mode_code, int64_t pos_encoding_mode_code,
-                                      int64_t layout, int64_t window_left ADDITIONAL_FUNC_PARAMS,
-                                      TVMStreamHandle cu_stream);
+Array<int64_t> BatchPrefillWithKVCachePlan(
+    TensorView float_workspace_buffer, TensorView int_workspace_buffer,
+    TensorView page_locked_int_workspace_buffer, TensorView qo_indptr, TensorView kv_indptr,
+    TensorView kv_len_arr, int64_t total_num_rows, int64_t batch_size, int64_t num_qo_heads,
+    int64_t num_kv_heads, int64_t page_size, bool enable_cuda_graph, int64_t head_dim_qk,
+    int64_t head_dim_vo, bool causal, int64_t window_left, int64_t fixed_split_size,
+    bool disable_split_kv, int64_t num_colocated_ctas);
 
-void BatchPrefillWithPagedKVCacheRun(DLTensor* float_workspace_buffer,
-                                     DLTensor* int_workspace_buffer, IntTuple plan_info_vec,
-                                     DLTensor* q, DLTensor* paged_kv_cache, DLTensor* qo_indptr,
-                                     DLTensor* paged_kv_indptr, DLTensor* paged_kv_indices,
-                                     DLTensor* paged_kv_last_page_len, DLTensor* q_rope_offset,
-                                     DLTensor* paged_kv_rope_pos_offset, DLTensor* o, DLTensor* lse,
-                                     int64_t mask_mode_code, int64_t pos_encoding_mode_code,
-                                     int64_t layout, int64_t window_left ADDITIONAL_FUNC_PARAMS,
-                                     TVMStreamHandle cu_stream);
+void BatchPrefillWithRaggedKVCacheRun(TensorView float_workspace_buffer,
+                                      TensorView int_workspace_buffer, Array<int64_t> plan_info_vec,
+                                      TensorView q, TensorView k, TensorView v,
+                                      TensorView qo_indptr, TensorView kv_indptr, TensorView o,
+                                      Optional<TensorView> maybe_lse, int64_t mask_mode_code,
+                                      int64_t layout, int64_t window_left,
+                                      bool enable_pdl ADDITIONAL_FUNC_PARAMS);
 
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(batch_prefill_with_kv_cache_plan, BatchPrefillWithKVCachePlan);
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(batch_prefill_with_ragged_kv_cache_run,
-                              BatchPrefillWithRaggedKVCacheRun);
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(batch_prefill_with_paged_kv_cache_run,
-                              BatchPrefillWithPagedKVCacheRun);
+void BatchPrefillWithPagedKVCacheRun(TensorView float_workspace_buffer,
+                                     TensorView int_workspace_buffer, Array<int64_t> plan_info_vec,
+                                     TensorView q, TensorView paged_k_cache,
+                                     TensorView paged_v_cache, TensorView qo_indptr,
+                                     TensorView paged_kv_indptr, TensorView paged_kv_indices,
+                                     TensorView paged_kv_last_page_len, TensorView o,
+                                     Optional<TensorView> maybe_lse, int64_t mask_mode_code,
+                                     int64_t layout, int64_t window_left,
+                                     bool enable_pdl ADDITIONAL_FUNC_PARAMS);
+
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(plan, BatchPrefillWithKVCachePlan);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(ragged_run, BatchPrefillWithRaggedKVCacheRun);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(paged_run, BatchPrefillWithPagedKVCacheRun);

@@ -9,9 +9,7 @@
 #define ADDITIONAL_PARAMS_SETTER {{ additional_params_setter }}
 
 #define DISPATCH_context(DTypeQ, DTypeKV, DTypeO, IdType, MASK_MODE, HEAD_DIM_QK, HEAD_DIM_VO, USE_SLIDING_WINDOW, USE_LOGITS_SOFT_CAP, AttentionVariant, RaggedParams, PagedParams, ...) \
-  DISPATCH_POS_ENCODING_MODE(pos_encoding_mode, POS_ENCODING_MODE, { \
-    DISPATCH_MASK_MODE(mask_mode, MASK_MODE, { using AttentionVariant = {{ variant_name }}; __VA_ARGS__();}) \
-  })
+  DISPATCH_MASK_MODE(mask_mode, MASK_MODE, { using AttentionVariant = {{ variant_name }}; __VA_ARGS__();})
 
 using namespace flashinfer;
 
@@ -44,9 +42,7 @@ struct RaggedParams {
   IdType* kv_lens;
   IdType* head_indices;
   IdType* work_indptr;
-
-  IdType* maybe_q_rope_offset;
-  IdType* maybe_k_rope_offset;
+  IdType* batch_indices;
 
   struct AdditionalParams {
     {{ additional_params_decl }}
@@ -92,8 +88,7 @@ struct PagedParams {
   IdType* kv_lens;
   IdType* head_indices;
   IdType* work_indptr;
-
-  IdType* maybe_q_rope_offset;
+  IdType* batch_indices;
 
   struct AdditionalParams {
     {{ additional_params_decl }}
@@ -108,6 +103,11 @@ struct PagedParams {
   int64_t v_stride_h;
   int64_t o_stride_h;
   int64_t nnz_qo;
+
+  // NOTE: For sparse paged KV cache, we need the stride between pages
+  // This is paged_k_cache.stride(0), not the layout stride
+  int64_t k_page_stride;  // Stride between pages for K
+  int64_t v_page_stride;  // Stride between pages for V
 
   int head_dim;
   int num_qo_heads;

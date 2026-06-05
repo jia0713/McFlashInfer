@@ -123,8 +123,6 @@ def gen_customize_batch_prefill_tvm_binding(
 
         source_paths = []
         pos_encoding_modes = [0]
-        if enable_inline_rope:
-            pos_encoding_modes.append(1)
         for mask_mode, pos_encoding_mode in itertools.product(
             [0, 1], pos_encoding_modes
         ):

@@ -16,10 +16,10 @@
 #include <flashinfer/attention/mask.cuh>
 #include <flashinfer/attention/scheduler.cuh>
 #include <flashinfer/pos_enc.cuh>
-#include <optional>
 
 #include "batch_prefill_config.inc"
-#include "tvm_binding_utils.h"
+#include "tvm/ffi/container/array.h"
+#include "tvm_ffi_utils.h"
 
 namespace flashinfer {
 
@@ -39,95 +39,80 @@ cudaError_t BatchPrefillWithRaggedKVCacheDispatched(Params params, typename Para
 
 using namespace flashinfer;
 
-IntTuple BatchPrefillWithKVCachePlan(
-    DLTensor* float_workspace_buffer, DLTensor* int_workspace_buffer,
-    DLTensor* page_locked_int_workspace_buffer, DLTensor* qo_indptr, DLTensor* kv_indptr,
-    IntTuple kv_len_arr, int64_t total_num_rows, int64_t batch_size, int64_t num_qo_heads,
+using tvm::ffi::Array;
+using tvm::ffi::Optional;
+
+Array<int64_t> BatchPrefillWithKVCachePlan(
+    TensorView float_workspace_buffer, TensorView int_workspace_buffer,
+    TensorView page_locked_int_workspace_buffer, TensorView qo_indptr, TensorView kv_indptr,
+    TensorView kv_len_arr, int64_t total_num_rows, int64_t batch_size, int64_t num_qo_heads,
     int64_t num_kv_heads, int64_t page_size, bool enable_cuda_graph, int64_t head_dim_qk,
-    int64_t head_dim_vo, bool causal, TVMStreamHandle cu_stream) {
+    int64_t head_dim_vo, bool causal, int64_t window_left, int64_t fixed_split_size,
+    bool disable_split_kv, int64_t num_colocated_ctas = 0) {
   size_t float_workspace_size_in_bytes =
-      float_workspace_buffer->shape[0] * DataType(float_workspace_buffer->dtype).bytes();
+      float_workspace_buffer.size(0) * get_element_size(float_workspace_buffer);
   size_t int_workspace_size_in_bytes =
-      int_workspace_buffer->shape[0] * DataType(int_workspace_buffer->dtype).bytes();
+      int_workspace_buffer.size(0) * get_element_size(int_workspace_buffer);
 
   PrefillPlanInfo plan_info;
 
-  cudaStream_t stream = static_cast<cudaStream_t>(cu_stream);
+  ffi::CUDADeviceGuard device_guard(float_workspace_buffer.device().device_id);
+  const cudaStream_t stream = get_stream(float_workspace_buffer.device());
   cudaError_t status = PrefillPlan<IdType>(
-      static_cast<char*>(float_workspace_buffer->data) + float_workspace_buffer->byte_offset,
-      float_workspace_size_in_bytes,
-      static_cast<char*>(int_workspace_buffer->data) + int_workspace_buffer->byte_offset,
-      static_cast<char*>(page_locked_int_workspace_buffer->data) +
-          page_locked_int_workspace_buffer->byte_offset,
-      int_workspace_size_in_bytes, plan_info,
-      static_cast<IdType*>(qo_indptr->data) + qo_indptr->byte_offset / sizeof(IdType),
-      static_cast<IdType*>(kv_indptr->data) + kv_indptr->byte_offset / sizeof(IdType),
-      total_num_rows, batch_size, num_qo_heads, num_kv_heads, head_dim_qk, head_dim_vo, page_size,
-      enable_cuda_graph,
+      float_workspace_buffer.data_ptr(), float_workspace_size_in_bytes,
+      int_workspace_buffer.data_ptr(), page_locked_int_workspace_buffer.data_ptr(),
+      int_workspace_size_in_bytes, plan_info, static_cast<IdType*>(qo_indptr.data_ptr()),
+      static_cast<IdType*>(kv_indptr.data_ptr()), total_num_rows, batch_size, num_qo_heads,
+      num_kv_heads, head_dim_qk, head_dim_vo, page_size, enable_cuda_graph,
       /*sizeof_dtype_o=*/2, stream);
 
-  CHECK(status == cudaSuccess) << "Failed to plan prefill with error: "
-                               << cudaGetErrorString(status);
+  TVM_FFI_ICHECK(status == cudaSuccess)
+      << "Failed to plan prefill with error: " << cudaGetErrorString(status);
 
-  std::vector<int64_t> plan_info_vec = plan_info.ToVector();
-  return IntTuple{plan_info_vec.begin(), plan_info_vec.end()};
+  return Array(plan_info.ToVector());
 }
 
-void BatchPrefillWithRaggedKVCacheRun(DLTensor* float_workspace_buffer,
-                                      DLTensor* int_workspace_buffer, IntTuple plan_info_vec,
-                                      DLTensor* q, DLTensor* k, DLTensor* v, DLTensor* qo_indptr,
-                                      DLTensor* kv_indptr, DLTensor* q_rope_offset,
-                                      DLTensor* k_rope_offset, DLTensor* o, DLTensor* lse,
-                                      int64_t mask_mode_code, int64_t pos_encoding_mode_code,
-                                      int64_t layout, int64_t window_left ADDITIONAL_FUNC_PARAMS,
-                                      TVMStreamHandle cu_stream) {
+void BatchPrefillWithRaggedKVCacheRun(TensorView float_workspace_buffer,
+                                      TensorView int_workspace_buffer, Array<int64_t> plan_info_vec,
+                                      TensorView q, TensorView k, TensorView v,
+                                      TensorView qo_indptr, TensorView kv_indptr, TensorView o,
+                                      Optional<TensorView> maybe_lse, int64_t mask_mode_code,
+                                      int64_t layout, int64_t window_left,
+                                      bool enable_pdl ADDITIONAL_FUNC_PARAMS) {
   PrefillPlanInfo plan_info;
-  std::vector<int64_t> plan_info_vec_(plan_info_vec->data,
-                                      plan_info_vec->data + plan_info_vec->size);
-  plan_info.FromVector(plan_info_vec_);
+  plan_info.FromVector(std::vector<int64_t>(plan_info_vec.begin(), plan_info_vec.end()));
   QKVLayout kv_layout = static_cast<QKVLayout>(layout);
 
-  int64_t num_qo_heads = q->shape[1];
-  int64_t head_dim_qk = q->shape[2];
-  int64_t num_kv_heads = (kv_layout == QKVLayout::kNHD) ? k->shape[1] : k->shape[0];
-  int64_t q_strides[3] = {q->strides ? q->strides[0] : q->shape[1] * q->shape[2],  //
-                          q->strides ? q->strides[1] : q->shape[2],                //
-                          q->strides ? q->strides[2] : 1};
-  int64_t k_strides[3] = {k->strides ? k->strides[0] : k->shape[1] * k->shape[2],  //
-                          k->strides ? k->strides[1] : k->shape[2],                //
-                          k->strides ? k->strides[2] : 1};
-  int64_t v_strides[3] = {v->strides ? v->strides[0] : v->shape[1] * v->shape[2],  //
-                          v->strides ? v->strides[1] : v->shape[2],                //
-                          v->strides ? v->strides[2] : 1};
-  uint32_t q_stride_n = q_strides[0], q_stride_h = q_strides[1];
-  uint32_t k_stride_n, k_stride_h, v_stride_n, v_stride_h;
+  int64_t num_qo_heads = q.size(1);
+  int64_t head_dim_qk = q.size(2);
+  int64_t num_kv_heads = (kv_layout == QKVLayout::kNHD) ? k.size(1) : k.size(0);
+  uint32_t q_stride_n = q.stride(0), q_stride_h = q.stride(1), k_stride_n, k_stride_h, v_stride_n,
+           v_stride_h;
   if (kv_layout == QKVLayout::kNHD) {
-    k_stride_n = k_strides[0];
-    k_stride_h = k_strides[1];
-    v_stride_n = v_strides[0];
-    v_stride_h = v_strides[1];
+    k_stride_n = k.stride(0);
+    k_stride_h = k.stride(1);
+    v_stride_n = v.stride(0);
+    v_stride_h = v.stride(1);
   } else {
-    k_stride_h = k_strides[0];
-    k_stride_n = k_strides[1];
-    v_stride_h = v_strides[0];
-    v_stride_n = v_strides[1];
+    k_stride_h = k.stride(0);
+    k_stride_n = k.stride(1);
+    v_stride_h = v.stride(0);
+    v_stride_n = v.stride(1);
   }
 
-  CHECK(lse->shape[0] == q->shape[0]) << "LSE shape mismatch on dim 0";
-  CHECK(lse->shape[1] == q->shape[1]) << "LSE shape mismatch on dim 1";
+  if (maybe_lse.has_value()) {
+    const auto& lse = *maybe_lse;
+    TVM_FFI_ICHECK_EQ(lse.size(0), q.size(0));
+    TVM_FFI_ICHECK_EQ(lse.size(1), q.size(1));
+  }
 
-  void* float_buffer_ptr =
-      static_cast<char*>(float_workspace_buffer->data) + float_workspace_buffer->byte_offset;
-  void* int_buffer_ptr =
-      static_cast<char*>(int_workspace_buffer->data) + int_workspace_buffer->byte_offset;
+  void* float_buffer_ptr = float_workspace_buffer.data_ptr();
+  void* int_buffer_ptr = int_workspace_buffer.data_ptr();
 
   const MaskMode mask_mode = static_cast<MaskMode>(mask_mode_code);
-  const PosEncodingMode pos_encoding_mode = static_cast<PosEncodingMode>(pos_encoding_mode_code);
 
-  DataType q_scalar_type(q->dtype);
-  DataType kv_scalar_type(k->dtype);
-
-  cudaStream_t stream = static_cast<cudaStream_t>(cu_stream);
+  ffi::CUDADeviceGuard device_guard(float_workspace_buffer.device().device_id);
+  const cudaStream_t stream = get_stream(float_workspace_buffer.device());
 
   DISPATCH_context(
       DTypeQ, DTypeKV, DTypeO, IdType, MASK_MODE, HEAD_DIM_QK, HEAD_DIM_VO, POS_ENCODING_MODE,
@@ -135,26 +120,17 @@ void BatchPrefillWithRaggedKVCacheRun(DLTensor* float_workspace_buffer,
       RaggedParams, PagedParams, [&] {
         RaggedParams params;
 
-        params.q = static_cast<DTypeQ*>(q->data) + q->byte_offset / sizeof(DTypeQ);
-        params.k = static_cast<DTypeKV*>(k->data) + k->byte_offset / sizeof(DTypeKV);
-        params.v = static_cast<DTypeKV*>(v->data) + v->byte_offset / sizeof(DTypeKV);
-        params.o = static_cast<DTypeO*>(o->data) + o->byte_offset / sizeof(DTypeO);
-        params.lse = static_cast<float*>(lse->data) + lse->byte_offset / sizeof(float);
-        params.q_indptr =
-            static_cast<IdType*>(qo_indptr->data) + qo_indptr->byte_offset / sizeof(IdType);
-        params.kv_indptr =
-            static_cast<IdType*>(kv_indptr->data) + kv_indptr->byte_offset / sizeof(IdType);
+        params.q = static_cast<DTypeQ*>(q.data_ptr());
+        params.k = static_cast<DTypeKV*>(k.data_ptr());
+        params.v = static_cast<DTypeKV*>(v.data_ptr());
+        params.o = static_cast<DTypeO*>(o.data_ptr());
+        params.lse =
+            maybe_lse.has_value() ? static_cast<float*>(maybe_lse.value().data_ptr()) : nullptr;
+        params.q_indptr = static_cast<IdType*>(qo_indptr.data_ptr());
+        params.kv_indptr = static_cast<IdType*>(kv_indptr.data_ptr());
         params.num_qo_heads = num_qo_heads;
         params.num_kv_heads = num_kv_heads;
         params.group_size = uint_fastdiv(num_qo_heads / num_kv_heads);
-        params.maybe_q_rope_offset = q_rope_offset != nullptr
-                                         ? static_cast<IdType*>(q_rope_offset->data) +
-                                               q_rope_offset->byte_offset / sizeof(IdType)
-                                         : nullptr;
-        params.maybe_k_rope_offset = k_rope_offset != nullptr
-                                         ? static_cast<IdType*>(k_rope_offset->data) +
-                                               k_rope_offset->byte_offset / sizeof(IdType)
-                                         : nullptr;
         params.q_stride_n = q_stride_n;
         params.q_stride_h = q_stride_h;
         params.k_stride_n = k_stride_n;
@@ -215,72 +191,62 @@ void BatchPrefillWithRaggedKVCacheRun(DLTensor* float_workspace_buffer,
               RaggedParams>(params, tmp_v, tmp_s, stream);
         });
 
-        CHECK(status == cudaSuccess)
+        TVM_FFI_ICHECK(status == cudaSuccess)
             << "BatchPrefillWithRaggedKVCache failed with error " << cudaGetErrorString(status);
         return true;
       });
 }
 
-void BatchPrefillWithPagedKVCacheRun(DLTensor* float_workspace_buffer,
-                                     DLTensor* int_workspace_buffer, IntTuple plan_info_vec,
-                                     DLTensor* q, DLTensor* paged_kv_cache, DLTensor* qo_indptr,
-                                     DLTensor* paged_kv_indptr, DLTensor* paged_kv_indices,
-                                     DLTensor* paged_kv_last_page_len, DLTensor* q_rope_offset,
-                                     DLTensor* paged_kv_rope_pos_offset, DLTensor* o, DLTensor* lse,
-                                     int64_t mask_mode_code, int64_t pos_encoding_mode_code,
-                                     int64_t layout, int64_t window_left ADDITIONAL_FUNC_PARAMS,
-                                     TVMStreamHandle cu_stream) {
+void BatchPrefillWithPagedKVCacheRun(TensorView float_workspace_buffer,
+                                     TensorView int_workspace_buffer, Array<int64_t> plan_info_vec,
+                                     TensorView q, TensorView paged_k_cache,
+                                     TensorView paged_v_cache, TensorView qo_indptr,
+                                     TensorView paged_kv_indptr, TensorView paged_kv_indices,
+                                     TensorView paged_kv_last_page_len, TensorView o,
+                                     Optional<TensorView> maybe_lse, int64_t mask_mode_code,
+                                     int64_t layout, int64_t window_left,
+                                     bool enable_pdl ADDITIONAL_FUNC_PARAMS) {
   PrefillPlanInfo plan_info;
-  std::vector<int64_t> plan_info_vec_(plan_info_vec->data,
-                                      plan_info_vec->data + plan_info_vec->size);
-  plan_info.FromVector(plan_info_vec_);
+  plan_info.FromVector(std::vector<int64_t>(plan_info_vec.begin(), plan_info_vec.end()));
   QKVLayout kv_layout = static_cast<QKVLayout>(layout);
-  int64_t batch_size = paged_kv_indptr->shape[0] - 1;
-  int64_t num_qo_heads = q->shape[1];
+  int64_t batch_size = paged_kv_indptr.size(0) - 1;
+  int64_t num_qo_heads = q.size(1);
   int64_t num_kv_heads, page_size;
-  uint32_t head_dim_qk = q->shape[2];
+  uint32_t head_dim_qk = q.size(2);
   if (kv_layout == QKVLayout::kHND) {
-    num_kv_heads = paged_kv_cache->shape[2];
-    page_size = paged_kv_cache->shape[3];
+    num_kv_heads = paged_k_cache.size(1);
+    page_size = paged_k_cache.size(2);
   } else {
-    page_size = paged_kv_cache->shape[2];
-    num_kv_heads = paged_kv_cache->shape[3];
+    page_size = paged_k_cache.size(1);
+    num_kv_heads = paged_k_cache.size(2);
   }
 
-  CHECK(lse->shape[0] == q->shape[0]) << "LSE shape mismatch on dim 0";
-  CHECK(lse->shape[1] == q->shape[1]) << "LSE shape mismatch on dim 1";
+  if (maybe_lse) {
+    const auto& lse = *maybe_lse;
+    TVM_FFI_ICHECK_EQ(lse.size(0), q.size(0));
+    TVM_FFI_ICHECK_EQ(lse.size(1), q.size(1));
+  }
 
-  void* float_buffer_ptr =
-      static_cast<char*>(float_workspace_buffer->data) + float_workspace_buffer->byte_offset;
-  void* int_buffer_ptr =
-      static_cast<char*>(int_workspace_buffer->data) + int_workspace_buffer->byte_offset;
+  void* float_buffer_ptr = static_cast<void*>(float_workspace_buffer.data_ptr());
+  void* int_buffer_ptr = static_cast<void*>(int_workspace_buffer.data_ptr());
 
   const MaskMode mask_mode = static_cast<MaskMode>(mask_mode_code);
-  const PosEncodingMode pos_encoding_mode = static_cast<PosEncodingMode>(pos_encoding_mode_code);
-  DataType q_scalar_type(q->dtype);
-  DataType kv_scalar_type(paged_kv_cache->dtype);
 
   // get q_stride_n and q_stride_h
-  int64_t q_strides[3] = {q->strides ? q->strides[0] : q->shape[1] * q->shape[2],  //
-                          q->strides ? q->strides[1] : q->shape[2],                //
-                          q->strides ? q->strides[2] : 1};
-  const auto q_stride_n = q_strides[0];
-  const auto q_stride_h = q_strides[1];
+  const auto q_stride_n = q.stride(0);
+  const auto q_stride_h = q.stride(1);
 
   // get kv_cache_strides
-  int64_t kv_cache_strides[4] = {
-      paged_kv_cache->strides ? paged_kv_cache->strides[0]
-                              : paged_kv_cache->shape[1] * paged_kv_cache->shape[2] *
-                                    paged_kv_cache->shape[3] * paged_kv_cache->shape[4],
-      paged_kv_cache->strides ? paged_kv_cache->strides[2]
-                              : paged_kv_cache->shape[3] * paged_kv_cache->shape[4],    //
-      paged_kv_cache->strides ? paged_kv_cache->strides[3] : paged_kv_cache->shape[4],  //
-      paged_kv_cache->strides ? paged_kv_cache->strides[4] : 1};
-  int64_t v_offset = paged_kv_cache->strides ? paged_kv_cache->strides[1]
-                                             : paged_kv_cache->shape[2] * paged_kv_cache->shape[3] *
-                                                   paged_kv_cache->shape[4];
+  auto kv_cache_strides_vec = paged_k_cache.strides();
+  const int64_t* kv_cache_strides = kv_cache_strides_vec.data();
+  TVM_FFI_ICHECK_EQ(paged_k_cache.ndim(), paged_v_cache.ndim());
+  for (int i = 0; i < paged_k_cache.ndim(); ++i) {
+    TVM_FFI_ICHECK_EQ(paged_k_cache.stride(i), paged_v_cache.stride(i))
+        << "k/v strides differs at " << i;
+  }
 
-  cudaStream_t stream = static_cast<cudaStream_t>(cu_stream);
+  ffi::CUDADeviceGuard device_guard(float_workspace_buffer.device().device_id);
+  const cudaStream_t stream = get_stream(float_workspace_buffer.device());
 
   DISPATCH_context(
       DTypeQ, DTypeKV, DTypeO, IdType, MASK_MODE, HEAD_DIM_QK, HEAD_DIM_VO, POS_ENCODING_MODE,
@@ -288,36 +254,21 @@ void BatchPrefillWithPagedKVCacheRun(DLTensor* float_workspace_buffer,
       RaggedParams, PagedParams, [&] {
         PagedParams params;
 
-        params.q = static_cast<DTypeQ*>(q->data) + q->byte_offset / sizeof(DTypeQ);
+        params.q = static_cast<DTypeQ*>(q.data_ptr());
         paged_kv_t<DTypeKV, IdType> paged_kv(
             num_kv_heads, page_size, HEAD_DIM_VO, batch_size, kv_layout,
-            static_cast<DTypeKV*>(paged_kv_cache->data) +
-                paged_kv_cache->byte_offset / sizeof(DTypeKV),
-            static_cast<DTypeKV*>(paged_kv_cache->data) +
-                paged_kv_cache->byte_offset / sizeof(DTypeKV) + v_offset,
-            kv_cache_strides,
-            static_cast<IdType*>(paged_kv_indices->data) +
-                paged_kv_indices->byte_offset / sizeof(IdType),
-            static_cast<IdType*>(paged_kv_indptr->data) +
-                paged_kv_indptr->byte_offset / sizeof(IdType),
-            static_cast<IdType*>(paged_kv_last_page_len->data) +
-                paged_kv_last_page_len->byte_offset / sizeof(IdType),
-            paged_kv_rope_pos_offset != nullptr
-                ? static_cast<IdType*>(paged_kv_rope_pos_offset->data) +
-                      paged_kv_rope_pos_offset->byte_offset / sizeof(IdType)
-                : nullptr);
+            static_cast<DTypeKV*>(paged_k_cache.data_ptr()),
+            static_cast<DTypeKV*>(paged_v_cache.data_ptr()), kv_cache_strides,
+            static_cast<IdType*>(paged_kv_indices.data_ptr()),
+            static_cast<IdType*>(paged_kv_indptr.data_ptr()),
+            static_cast<IdType*>(paged_kv_last_page_len.data_ptr()));
         params.paged_kv = paged_kv;
-        params.q_indptr =
-            static_cast<IdType*>(qo_indptr->data) + qo_indptr->byte_offset / sizeof(IdType);
-        params.o = static_cast<DTypeO*>(o->data) + o->byte_offset / sizeof(DTypeO);
+        params.q_indptr = static_cast<IdType*>(qo_indptr.data_ptr());
+        params.o = static_cast<DTypeO*>(o.data_ptr());
 
-        params.lse = static_cast<float*>(lse->data) + lse->byte_offset / sizeof(float);
+        params.lse = maybe_lse ? static_cast<float*>(maybe_lse.value().data_ptr()) : nullptr;
         params.num_qo_heads = num_qo_heads;
         params.group_size = uint_fastdiv(num_qo_heads / paged_kv.num_heads);
-        params.maybe_q_rope_offset = q_rope_offset != nullptr
-                                         ? static_cast<IdType*>(q_rope_offset->data) +
-                                               q_rope_offset->byte_offset / sizeof(IdType)
-                                         : nullptr;
         params.q_stride_n = q_stride_n;
         params.q_stride_h = q_stride_h;
         params.window_left = window_left;
@@ -374,7 +325,7 @@ void BatchPrefillWithPagedKVCacheRun(DLTensor* float_workspace_buffer,
               PagedParams>(params, tmp_v, tmp_s, stream);
         });
 
-        CHECK(status == cudaSuccess)
+        TVM_FFI_ICHECK(status == cudaSuccess)
             << "BatchPrefillWithPagedKVCache failed with error " << cudaGetErrorString(status);
         return true;
       });
