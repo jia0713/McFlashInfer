@@ -118,7 +118,7 @@ nhd_noncausal_multi_page_gqa: plan_info_len=15 out_shape=(6, 4, 64) ... allclose
 hnd_causal_multi_page_gqa: plan_info_len=15 out_shape=(5, 4, 64) ... allclose=True
 nhd_causal_long_non64_gqa: plan_info_len=15 out_shape=(194, 4, 64) ... allclose=True
 hnd_noncausal_long_non64_gqa: plan_info_len=15 out_shape=(203, 4, 64) ... allclose=True
-ragged_causal_long_non64_gqa: plan_info_len=15 out_shape=(82, 4, 64) ... allclose=True
+ragged_causal_long_non64_gqa: plan_info_len=15 out_shape=(194, 4, 64) ... allclose=True
 all cases passed
 ```
 
@@ -141,3 +141,15 @@ The exact error values may change slightly across toolchain versions.
   tensors plus logits/scale/RoPE scalar parameters.
 - `ragged_run` is compiled, exported, and covered by a numeric correctness case.
 - Inline RoPE is not covered by this minimal TVM-FFI test.
+
+Run the broader stress test when you want more shape coverage:
+
+```bash
+python tests/test_tvmffi_batch_prefill_stress.py
+```
+
+The stress test covers 200 xLLM-style cases: paged/chunked prefill including
+tensor-core decode shapes, and ragged regular prefill shapes. Ragged causal
+cases keep `q_len == kv_len`; `q_len < kv_len` is covered through paged/chunked
+prefill because that is the path xLLM uses for chunked prefill and tensor-core
+decode.

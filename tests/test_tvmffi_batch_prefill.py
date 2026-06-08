@@ -304,8 +304,8 @@ def run_case(mod, case, device):
 
 def run_ragged_case(mod, device):
     head_dim = 64
-    q_lens = [65, 17]
-    kv_lens = [1025, 33]
+    q_lens = [65, 129]
+    kv_lens = [65, 129]
     batch = len(q_lens)
     num_qo_heads = 4
     num_kv_heads = 2
