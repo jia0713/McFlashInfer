@@ -23,6 +23,7 @@ def generate_additional_params(
     additional_scalar_names: List[str],
     additional_scalar_dtypes: List[str],
     is_sm90_template: bool = False,
+    for_tvm_ffi: bool = False,
 ):
     additional_params_decl = "".join(
         [
@@ -37,25 +38,45 @@ def generate_additional_params(
             for dtype, var in zip(additional_scalar_dtypes, additional_scalar_names)
         ]
     )
-    additional_func_params = "".join(
-        [
-            (
-                f", std::optional<at::Tensor> {var}"
-                if var.startswith("maybe")
-                else f", at::Tensor {var}"
-            )
-            for var in additional_tensor_names
-        ]
-        + [
-            f", {dtype} {var}"
-            for dtype, var in zip(additional_scalar_dtypes, additional_scalar_names)
-        ]
-    )
+    if for_tvm_ffi:
+        additional_func_params = "".join(
+            [
+                (
+                    f", Optional<TensorView> {var}"
+                    if var.startswith("maybe")
+                    else f", TensorView {var}"
+                )
+                for var in additional_tensor_names
+            ]
+            + [
+                f", {dtype} {var}"
+                for dtype, var in zip(additional_scalar_dtypes, additional_scalar_names)
+            ]
+        )
+    else:
+        additional_func_params = "".join(
+            [
+                (
+                    f", std::optional<at::Tensor> {var}"
+                    if var.startswith("maybe")
+                    else f", at::Tensor {var}"
+                )
+                for var in additional_tensor_names
+            ]
+            + [
+                f", {dtype} {var}"
+                for dtype, var in zip(additional_scalar_dtypes, additional_scalar_names)
+            ]
+        )
     if is_sm90_template:
         additional_params_setter = " \\\n".join(
             [
                 (
-                    f"params.additional_params.{var} = {var} ? static_cast<{dtype}*>({var}->data_ptr()): nullptr;"
+                    (
+                        f"params.additional_params.{var} = {var}.has_value() ? static_cast<{dtype}*>({var}.value().data_ptr()): nullptr;"
+                        if for_tvm_ffi
+                        else f"params.additional_params.{var} = {var} ? static_cast<{dtype}*>({var}->data_ptr()): nullptr;"
+                    )
                     if var.startswith("maybe")
                     else f"params.additional_params.{var} = static_cast<{dtype}*>({var}.data_ptr());"
                 )
@@ -70,7 +91,11 @@ def generate_additional_params(
         additional_params_setter = " \\\n".join(
             [
                 (
-                    f"params.{var} = {var} ? static_cast<{dtype}*>({var}->data_ptr()): nullptr;"
+                    (
+                        f"params.{var} = {var}.has_value() ? static_cast<{dtype}*>({var}.value().data_ptr()): nullptr;"
+                        if for_tvm_ffi
+                        else f"params.{var} = {var} ? static_cast<{dtype}*>({var}->data_ptr()): nullptr;"
+                    )
                     if var.startswith("maybe")
                     else f"params.{var} = static_cast<{dtype}*>({var}.data_ptr());"
                 )

@@ -94,6 +94,7 @@ def gen_customize_batch_prefill_tvm_binding(
                 additional_tensor_dtypes,
                 additional_scalar_names,
                 additional_scalar_dtypes,
+                for_tvm_ffi=True,
             )
         )
 
@@ -173,6 +174,7 @@ def gen_customize_batch_prefill_tvm_binding(
                 additional_scalar_names,
                 additional_scalar_dtypes,
                 is_sm90_template=True,
+                for_tvm_ffi=True,
             )
         )
 
@@ -281,6 +283,7 @@ def gen_customize_batch_decode_tvm_binding(
             additional_tensor_dtypes,
             additional_scalar_names,
             additional_scalar_dtypes,
+            for_tvm_ffi=True,
         )
     )
 

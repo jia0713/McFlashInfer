@@ -38,10 +38,30 @@ def build_mod():
         idtype=torch.int32,
         head_dim_qk=64,
         head_dim_vo=64,
-        additional_tensor_names=[],
-        additional_tensor_dtypes=[],
-        additional_scalar_names=["sm_scale"],
-        additional_scalar_dtypes=["float"],
+        additional_tensor_names=[
+            "maybe_custom_mask",
+            "maybe_mask_indptr",
+            "maybe_alibi_slopes",
+            "maybe_prefix_len_ptr",
+            "maybe_token_pos_in_items_ptr",
+            "maybe_max_item_len_ptr",
+        ],
+        additional_tensor_dtypes=[
+            "uint8_t",
+            "int32_t",
+            "float",
+            "uint32_t",
+            "uint16_t",
+            "uint16_t",
+        ],
+        additional_scalar_names=[
+            "logits_soft_cap",
+            "sm_scale",
+            "rope_rcp_scale",
+            "rope_rcp_theta",
+            "token_pos_in_items_len",
+        ],
+        additional_scalar_dtypes=["double", "double", "double", "double", "int64_t"],
         variant_name="DefaultAttention<use_custom_mask, false, false, false>",
         variant_decl="using namespace flashinfer;",
     )
@@ -115,6 +135,31 @@ def ref_paged_prefill(
         )
         kb = kb.float()
         vb = vb.float()
+        group = qb.shape[1] // kb.shape[1]
+        for h in range(qb.shape[1]):
+            kh = h // group
+            scores = qb[:, h] @ kb[:, kh].transpose(0, 1) * sm_scale
+            if causal:
+                m = qb.shape[0]
+                n = kb.shape[0]
+                q_idx = torch.arange(m, device=q.device)[:, None]
+                kv_idx = torch.arange(n, device=q.device)[None, :]
+                mask = kv_idx <= (q_idx + n - m)
+                scores = scores.masked_fill(~mask, -float("inf"))
+            probs = torch.softmax(scores, dim=-1)
+            out[q0:q1, h] = probs @ vb[:, kh]
+    return out.to(q.dtype)
+
+
+def ref_ragged_prefill(q, k, v, qo_indptr, kv_indptr, causal, sm_scale):
+    out = torch.empty_like(q, dtype=torch.float32)
+    batch = qo_indptr.numel() - 1
+    for b in range(batch):
+        q0, q1 = int(qo_indptr[b].item()), int(qo_indptr[b + 1].item())
+        k0, k1 = int(kv_indptr[b].item()), int(kv_indptr[b + 1].item())
+        qb = q[q0:q1].float()
+        kb = k[k0:k1].float()
+        vb = v[k0:k1].float()
         group = qb.shape[1] // kb.shape[1]
         for h in range(qb.shape[1]):
             kh = h // group
@@ -215,7 +260,17 @@ def run_case(mod, case, device):
         case.layout,
         -1,
         False,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        0.0,
         sm_scale,
+        1.0,
+        1.0 / 10000.0,
+        0,
     )
     torch.cuda.synchronize()
 
@@ -245,6 +300,98 @@ def run_case(mod, case, device):
         print("out_sample", out.flatten()[:8].detach().cpu().tolist(), flush=True)
         print("ref_sample", ref.flatten()[:8].detach().cpu().tolist(), flush=True)
         raise AssertionError(f"{case.name} failed")
+
+
+def run_ragged_case(mod, device):
+    head_dim = 64
+    q_lens = [65, 17]
+    kv_lens = [1025, 33]
+    batch = len(q_lens)
+    num_qo_heads = 4
+    num_kv_heads = 2
+    qo_indptr = make_indptr(q_lens, device)
+    kv_indptr = make_indptr(kv_lens, device)
+    qo_indptr_h = qo_indptr.cpu().contiguous()
+    kv_indptr_h = kv_indptr.cpu().contiguous()
+    kv_len_arr_h = torch.tensor(kv_lens, dtype=torch.int32).contiguous()
+    total_num_rows = int(qo_indptr_h[-1].item())
+    total_kv_rows = int(kv_indptr_h[-1].item())
+
+    q = torch.randn(total_num_rows, num_qo_heads, head_dim, dtype=torch.float16, device=device)
+    k = torch.randn(total_kv_rows, num_kv_heads, head_dim, dtype=torch.float16, device=device)
+    v = torch.randn_like(k)
+    out = torch.empty_like(q)
+    lse = torch.empty((total_num_rows, num_qo_heads), dtype=torch.float32, device=device)
+    float_ws = torch.empty(128 * 1024 * 1024, dtype=torch.uint8, device=device)
+    int_ws = torch.empty(16 * 1024 * 1024, dtype=torch.uint8, device=device)
+    pin_ws = torch.empty(16 * 1024 * 1024, dtype=torch.uint8, pin_memory=True)
+    sm_scale = 1.0 / math.sqrt(head_dim)
+    causal = True
+
+    plan_info = mod.plan(
+        float_ws,
+        int_ws,
+        pin_ws,
+        qo_indptr_h,
+        kv_indptr_h,
+        kv_len_arr_h,
+        total_num_rows,
+        batch,
+        num_qo_heads,
+        num_kv_heads,
+        1,
+        False,
+        head_dim,
+        head_dim,
+        causal,
+        -1,
+        -1,
+        False,
+        0,
+    )
+
+    mod.ragged_run(
+        float_ws,
+        int_ws,
+        plan_info,
+        q,
+        k,
+        v,
+        qo_indptr,
+        kv_indptr,
+        out,
+        lse,
+        1,
+        NHD,
+        -1,
+        False,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        0.0,
+        sm_scale,
+        1.0,
+        1.0 / 10000.0,
+        0,
+    )
+    torch.cuda.synchronize()
+
+    ref = ref_ragged_prefill(q, k, v, qo_indptr, kv_indptr, causal, sm_scale)
+    diff = (out.float() - ref.float()).abs()
+    max_abs = float(diff.max().item())
+    mean_abs = float(diff.mean().item())
+    ok = torch.allclose(out.float(), ref.float(), atol=3e-2, rtol=3e-2)
+    print(
+        f"ragged_causal_long_non64_gqa: plan_info_len={len(plan_info)} "
+        f"out_shape={tuple(out.shape)} max_abs={max_abs:.6g} "
+        f"mean_abs={mean_abs:.6g} allclose={bool(ok)}",
+        flush=True,
+    )
+    if not ok:
+        raise AssertionError("ragged_causal_long_non64_gqa failed")
 
 
 def main():
@@ -305,6 +452,7 @@ def main():
     ]
     for case in cases:
         run_case(mod, case, device)
+    run_ragged_case(mod, device)
     print("all cases passed", flush=True)
     # Avoid tvm_ffi/Python shutdown-time destructor issues observed in this env.
     os._exit(0)

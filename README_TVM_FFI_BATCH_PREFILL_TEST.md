@@ -118,6 +118,7 @@ nhd_noncausal_multi_page_gqa: plan_info_len=15 out_shape=(6, 4, 64) ... allclose
 hnd_causal_multi_page_gqa: plan_info_len=15 out_shape=(5, 4, 64) ... allclose=True
 nhd_causal_long_non64_gqa: plan_info_len=15 out_shape=(194, 4, 64) ... allclose=True
 hnd_noncausal_long_non64_gqa: plan_info_len=15 out_shape=(203, 4, 64) ... allclose=True
+ragged_causal_long_non64_gqa: plan_info_len=15 out_shape=(82, 4, 64) ... allclose=True
 all cases passed
 ```
 
@@ -135,6 +136,8 @@ The exact error values may change slightly across toolchain versions.
 - The tested head grouping includes MHA and GQA.
 - The tested sequence lengths include long Q/KV lengths that are not divisible
   by 64, including KV lengths above 1K and 3K tokens.
-- `ragged_run` is compiled and exported, but this test does not validate ragged
-  numeric correctness.
+- The checked-in test uses the same FA2 TVM-FFI additional argument tail that
+  xLLM passes for `ragged_run` and `paged_run`: optional custom mask/alibi/prefix
+  tensors plus logits/scale/RoPE scalar parameters.
+- `ragged_run` is compiled, exported, and covered by a numeric correctness case.
 - Inline RoPE is not covered by this minimal TVM-FFI test.
