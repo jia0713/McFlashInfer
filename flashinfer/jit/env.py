@@ -39,24 +39,28 @@ FLASHINFER_JIT_DIR = FLASHINFER_WORKSPACE_DIR / "cached_ops"
 FLASHINFER_GEN_SRC_DIR = FLASHINFER_WORKSPACE_DIR / "generated"
 _package_root = pathlib.Path(__file__).resolve().parents[1]
 _data_root = _package_root / "data"
-_source_tree_mode = not (_data_root / "tvm_binding").exists()
-if _source_tree_mode:
-    _data_root = _package_root.parent
+_source_root = _package_root.parent
+
+
+def _package_or_source_path(package_path: pathlib.Path, source_path: pathlib.Path) -> pathlib.Path:
+    return package_path if package_path.exists() else source_path
+
+
 FLASHINFER_DATA = _data_root
-FLASHINFER_INCLUDE_DIR = _data_root / "include"
-FLASHINFER_CSRC_DIR = _data_root / "csrc"
-# FLASHINFER_SRC_DIR = _data_root / "src"
-FLASHINFER_TVM_BINDING_DIR = _data_root / "tvm_binding"
-FLASHINFER_AOT_DIR = _data_root / "aot"
+FLASHINFER_INCLUDE_DIR = _package_or_source_path(_data_root / "include", _source_root / "include")
+FLASHINFER_CSRC_DIR = _package_or_source_path(_data_root / "csrc", _source_root / "csrc")
+# FLASHINFER_SRC_DIR = _package_or_source_path(_data_root / "src", _source_root / "src")
+FLASHINFER_TVM_BINDING_DIR = _package_or_source_path(
+    _data_root / "tvm_binding", _source_root / "tvm_binding"
+)
+FLASHINFER_AOT_DIR = _package_or_source_path(_data_root / "aot", _source_root / "aot")
 CUTLASS_INCLUDE_DIRS = [
-    (
-        _data_root / "3rdparty" / "mcTlass" / "include"
-        if _source_tree_mode
-        else _data_root / "cutlass" / "include"
+    _package_or_source_path(
+        _data_root / "cutlass" / "include",
+        _source_root / "3rdparty" / "mcTlass" / "include",
     ),
-    (
-        _data_root / "3rdparty" / "mcTlass" / "tools" / "util" / "include"
-        if _source_tree_mode
-        else _data_root / "cutlass" / "tools" / "util" / "include"
+    _package_or_source_path(
+        _data_root / "cutlass" / "tools" / "util" / "include",
+        _source_root / "3rdparty" / "mcTlass" / "tools" / "util" / "include",
     ),
 ]

@@ -53,6 +53,32 @@ rsync -a --delete \
   ./ acl_ici@10.0.180.24:/home/acl_ici/workspace/McFlashInfer_tvmffi/
 ```
 
+## Installed Package Use
+
+Framework integrations do not need a separate FlashInfer source checkout when
+FlashInfer is installed as a package. The JIT path first looks for package data
+under:
+
+```text
+flashinfer/data/tvm_binding
+flashinfer/data/csrc
+flashinfer/data/include
+flashinfer/data/cutlass
+```
+
+When those package-data directories are absent, the same code falls back to the
+source-tree layout used by this repo:
+
+```text
+tvm_binding
+csrc
+include
+3rdparty/mcTlass
+```
+
+This keeps installed-package usage independent from the source checkout while
+still allowing direct source-tree testing.
+
 ## Verify tvm_ffi
 
 Run:
