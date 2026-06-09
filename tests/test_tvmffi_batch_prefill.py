@@ -339,7 +339,7 @@ def run_ragged_case(mod, device):
         batch,
         num_qo_heads,
         num_kv_heads,
-        1,
+        0,
         False,
         head_dim,
         head_dim,

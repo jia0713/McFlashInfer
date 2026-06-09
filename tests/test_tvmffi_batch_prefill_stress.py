@@ -192,7 +192,7 @@ def run_ragged_case(mod, case, device):
         batch,
         case.num_qo_heads,
         case.num_kv_heads,
-        1,
+        0,
         False,
         head_dim,
         head_dim,
@@ -305,7 +305,7 @@ def make_cases():
                 kv_lens=kv_lens,
                 num_qo_heads=num_qo_heads,
                 num_kv_heads=num_kv_heads,
-                page_size=1,
+                page_size=0,
             )
         )
     return cases
