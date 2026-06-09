@@ -14,22 +14,27 @@
  * limitations under the License.
  */
 #include "batch_decode_config.inc"
-#include "tvm_binding_utils.h"
+#include "tvm/ffi/container/array.h"
+#include "tvm_ffi_utils.h"
 
-IntTuple BatchDecodeWithPagedKVCachePlan(
-    DLTensor* float_workspace_buffer, DLTensor* int_workspace_buffer,
-    DLTensor* page_locked_int_workspace_buffer, DLTensor* indptr, int64_t batch_size,
+using tvm::ffi::Array;
+using tvm::ffi::Optional;
+
+Array<int64_t> BatchDecodeWithPagedKVCachePlan(
+    TensorView float_workspace_buffer, TensorView int_workspace_buffer,
+    TensorView page_locked_int_workspace_buffer, TensorView indptr, int64_t batch_size,
     int64_t num_qo_heads, int64_t num_kv_heads, int64_t page_size, bool enable_cuda_graph,
-    int64_t pos_encoding_mode_code, int64_t window_left, int64_t head_dim_qk, int64_t head_dim_vo,
-    DataType q_scalar_type, DataType kv_scalar_type, TVMStreamHandle cu_stream);
+    int64_t window_left, double logits_soft_cap, int64_t head_dim_qk, int64_t head_dim_vo,
+    TensorView empty_q_data, TensorView empty_kv_data);
 
-void BatchDecodeWithPagedKVCacheRun(
-    DLTensor* float_workspace_buffer, DLTensor* int_workspace_buffer, IntTuple plan_info_vec,
-    DLTensor* q, DLTensor* paged_kv_cache, DLTensor* paged_kv_indptr, DLTensor* paged_kv_indices,
-    DLTensor* paged_kv_last_page_len, DLTensor* q_rope_offset, DLTensor* paged_kv_rope_pos_offset,
-    DLTensor* o, DLTensor* lse, int64_t pos_encoding_mode_code, int64_t kv_layout_code,
-    int64_t window_left ADDITIONAL_FUNC_PARAMS, TVMStreamHandle cu_stream);
+void BatchDecodeWithPagedKVCacheRun(TensorView float_workspace_buffer,
+                                    TensorView int_workspace_buffer, Array<int64_t> plan_info_vec,
+                                    TensorView q, TensorView paged_k_cache,
+                                    TensorView paged_v_cache, TensorView paged_kv_indptr,
+                                    TensorView paged_kv_indices, TensorView paged_kv_last_page_len,
+                                    TensorView o, Optional<TensorView> maybe_lse,
+                                    int64_t kv_layout_code, int64_t window_left,
+                                    bool enable_pdl ADDITIONAL_FUNC_PARAMS);
 
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(batch_decode_with_paged_kv_cache_plan,
-                              BatchDecodeWithPagedKVCachePlan);
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(batch_decode_with_paged_kv_cache_run, BatchDecodeWithPagedKVCacheRun);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(plan, BatchDecodeWithPagedKVCachePlan);
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(run, BatchDecodeWithPagedKVCacheRun);

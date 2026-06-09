@@ -261,6 +261,7 @@ def gen_customize_batch_decode_tvm_binding(
     additional_scalar_dtypes: List[str],
     variant_name: str,
     variant_decl: str,
+    pos_encoding_mode: int = 0,
     use_sliding_window: bool = False,
     use_logits_soft_cap: bool = False,
 ):
@@ -273,6 +274,7 @@ def gen_customize_batch_decode_tvm_binding(
         "idtype": dtype_map[idtype],
         "head_dim_qk": head_dim_qk,
         "head_dim_vo": head_dim_vo,
+        "pos_encoding_mode": pos_encoding_mode_literal[pos_encoding_mode],
         "use_sliding_window": str(use_sliding_window).lower(),
         "use_logits_soft_cap": str(use_logits_soft_cap).lower(),
     }
@@ -302,14 +304,18 @@ def gen_customize_batch_decode_tvm_binding(
     }
     generated_inc_str = config_templ.render(**kwargs)
     source_paths = []
-    for pos_encoding_mode in [0, 1]:
+    for kernel_pos_encoding_mode in [pos_encoding_mode]:
         dest_path = (
-            gen_directory / f"batch_decode_kernel_pos_encoding_{pos_encoding_mode}.cu"
+            gen_directory
+            / f"batch_decode_kernel_pos_encoding_{kernel_pos_encoding_mode}.cu"
         )
         source_paths.append(dest_path)
+        kernel_kwargs = dict(kwargs)
+        kernel_kwargs["pos_encoding_mode"] = pos_encoding_mode_literal[
+            kernel_pos_encoding_mode
+        ]
         source = kernel_inst_templ.render(
-            pos_encoding_mode=pos_encoding_mode_literal[pos_encoding_mode],
-            **kwargs,
+            **kernel_kwargs,
         )
         write_if_different(dest_path, source)
 
